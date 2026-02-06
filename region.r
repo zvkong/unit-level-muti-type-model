@@ -28,7 +28,7 @@ pums <- pums21 |>
 # poststratification cells: PUMA × SEX × BACH
 pcells <- pums |>
   dplyr::group_by(PUMA, SEX, BACH) |>
-  dplyr::summarise(popsize = dplyr::n(), .groups = "drop")
+  dplyr::summarise(popsize =  as.integer(round(sum(PWGTP))), .groups = "drop")
 
 predX <- model.matrix(~ SEX + BACH - 1, data = pcells)
 predS <- model.matrix(~ as.factor(pcells$PUMA) - 1)
