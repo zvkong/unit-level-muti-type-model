@@ -385,12 +385,13 @@ MTSM_br <- function(X_1, X_2, Z_1, Z_2, S, sig2b = 1000, wgt = NULL, n = NULL,
       (gamma - tau_2 * S %*% eta - S %*% lambda)
     Beta_2      <- as.vector(MASS::mvrnorm(1, mean.Beta_2, var.Beta_2))
 
-    var_tau_1 <- as.numeric(solve(drop(Matrix::t(eta) %*% M %*% eta) +
+    var_tau_2 <- as.numeric(solve(drop(Matrix::t(eta) %*% OM %*% eta) +
                                     1 / sig2t))
-    mean_tau_1 <- as.numeric(var_tau_1 *
-                               drop(Matrix::t(eta) %*% SD %*%
-                                      (Z_1 - X_1 %*% Beta_1)))
-    tau_1 <- stats::rnorm(1, mean_tau_1, sqrt(var_tau_1))
+    mean_tau_2 <- as.numeric(var_tau_2 *
+                               drop(Matrix::t(eta) %*% SO %*%
+                                      (gamma - X_2 %*% Beta_2 - S %*% lambda)))
+    tau_2 <- stats::rnorm(1, mean_tau_2, sqrt(var_tau_2))
+
 
     Mu_1 <- as.vector(X_1 %*% Beta_1 + tau_1 * S %*% eta)
     Mu_2 <- as.vector(X_2 %*% Beta_2 + tau_2 * S %*% eta + S %*% lambda)
