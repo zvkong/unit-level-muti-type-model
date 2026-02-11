@@ -99,6 +99,111 @@ interval_score <- function(lower, upper, truth, alpha = 0.05) {
 
 #   list(est = est, lb = lb, ub = ub, cr = cr, sigma2 = sigma2, post = df)
 # }
+gaus_post <- function(preds,
+                      sig2chain,
+                      true_mean,
+                      region,
+                      popsize) {
+
+  region  <- as.character(region)
+  regions <- unique(region)
+  C       <- length(regions)
+  nsim    <- ncol(preds)
+
+  stopifnot(length(sig2chain) == nsim)
+
+  idx_by_reg <- split(seq_along(region), region)
+  N_by_reg   <- sapply(idx_by_reg[regions], function(id) sum(popsize[id]))
+
+  post_mean <- matrix(NA_real_, nrow = C, ncol = nsim,
+                      dimnames = list(regions, NULL))
+  post <- matrix(NA_real_, nrow = C, ncol = nsim,
+                 dimnames = list(regions, NULL))
+
+  for (r in seq_len(nsim)) {
+    theta_j <- preds[, r]
+    sig2_r  <- sig2chain[r]
+
+    for (c in seq_along(regions)) {
+      ids <- idx_by_reg[[regions[c]]]
+      Nk  <- N_by_reg[c]
+
+      mu_mean <- sum(popsize[ids] * theta_j[ids]) / Nk
+      post_mean[c, r] <- mu_mean
+      mu_sd   <- sqrt(sig2_r / Nk)
+      post[c, r] <- stats::rnorm(1, mean = mu_mean, sd = mu_sd)
+    }
+  }
+
+  ## align true_mean by region names if provided
+  if (!is.null(names(true_mean))) true_mean <- true_mean[regions]
+
+  est    <- rowMeans(post)
+  sigma2 <- apply(post, 1, stats::var)
+  lb     <- apply(post, 1, stats::quantile, probs = 0.025)
+  ub     <- apply(post, 1, stats::quantile, probs = 0.975)
+  cr     <- mean(lb <= true_mean & true_mean <= ub)
+
+  est_param    <- rowMeans(post_mean)
+  var_param    <- apply(post_mean, 1, stats::var)
+  lb_param     <- apply(post_mean, 1, stats::quantile, probs = 0.025)
+  ub_param     <- apply(post_mean, 1, stats::quantile, probs = 0.975)
+  cr_param     <- mean(lb_param <= true_mean & true_mean <= ub_param)
+
+  list(est = est, lb = lb, ub = ub, cr = cr, sigma2 = sigma2, post = post,
+      est_nonoise = est_param, lb_nonoise = lb_param, ub_nonoise = ub_param,
+    cr_nonoise = cr_param, sigma2_nonoise = var_param, post_nonoise = post_mean)
+}
+bios_post <- function(preds, true_mean, region, popsize) {
+  region  <- as.character(region)
+  regions <- unique(region)
+
+  R  <- ncol(preds)
+  C  <- length(regions)
+  post_mean <- matrix(NA_real_, nrow = C, ncol = R,
+                      dimnames = list(regions, NULL))
+  post <- matrix(NA_real_, nrow = C, ncol = R,
+               dimnames = list(regions, NULL))
+
+  idx_by_reg <- split(seq_along(region), region)
+  N_by_reg   <- sapply(idx_by_reg[regions], function(id) sum(popsize[id]))
+
+  N_int <- as.integer(round(popsize))  # ensure integer sizes for rbinom
+
+  for (r in seq_len(R)) {
+    p_j <- preds[, r]
+    for (c in seq_along(regions)) {
+      ids <- idx_by_reg[[regions[c]]]
+      post_mean[c, r] <- sum(popsize[ids] * p_j[ids]) / N_by_reg[c]
+    }
+    # cell-level counts
+    s_j <- stats::rbinom(n = length(N_int), size = N_int, prob = p_j)
+
+    # aggregate to region-level proportion
+    for (k in seq_along(regions)) {
+      ids <- idx_by_reg[[regions[k]]]
+      post[k, r] <- sum(s_j[ids]) / N_by_reg[k]
+    }
+  }
+
+  if (!is.null(names(true_mean))) true_mean <- true_mean[regions]
+
+  est    <- rowMeans(post)
+  sigma2 <- apply(post, 1, stats::var)
+  lb     <- apply(post, 1, stats::quantile, probs = 0.025)
+  ub     <- apply(post, 1, stats::quantile, probs = 0.975)
+  cr     <- mean(lb <= true_mean & true_mean <= ub)
+  est_param <- rowMeans(post_mean)
+  var_param <- apply(post_mean, 1, stats::var)
+  lb_param  <- apply(post_mean, 1, stats::quantile, probs = 0.025)
+  ub_param  <- apply(post_mean, 1, stats::quantile, probs = 0.975)
+  cr_param  <- mean(lb_param <= true_mean & true_mean <= ub_param)
+
+  list(est = est, lb = lb, ub = ub, cr = cr, sigma2 = sigma2, post = post,
+      est_nonoise = est_param, lb_nonoise = lb_param, ub_nonoise = ub_param,
+    cr_nonoise = cr_param, sigma2_nonoise = var_param, post_nonoise = post_mean)
+}
+
 
 ## UNIS model for Binomial response
 unis_bios <- function(X, Y, S, sig2b = 1000, wgt = NULL, n = NULL,
