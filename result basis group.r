@@ -29,7 +29,7 @@ puma_sf <- tigris::pumas(
 basis_obj <- build_adj_basis_abs(
   area_sf = puma_sf,
   area_id = "PUMA",
-  q = 0.25
+  q = 0.5
 )
 
 basis_mat <- basis_obj$basis

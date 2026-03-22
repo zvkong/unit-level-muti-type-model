@@ -34,126 +34,107 @@ basis_obj <- build_adj_basis_abs(
 )
 
 basis_mat <- basis_obj$basis
-
-## Prepare analysis data
-pums1 <- pums_raw |>
-  dplyr::select(PUMA, PWGTP, SEX, RAC1P, POVPIP, PINCP, SCHL) |>
-  tidyr::drop_na() |>
-  dplyr::mutate(PINCP = as.numeric(PINCP)) |>
-  dplyr::filter(PINCP > 0) |>
-  dplyr::mutate(
-    PWGTP = as.numeric(PWGTP),
-    POVPIP = as.numeric(POVPIP),
-    SEX = factor(SEX),
-    RACE = factor(RAC1P),
-    LOGINCO = log(PINCP),
-    INCOME = PINCP,
-    degree = as.integer(SCHL),
-    income = sqrt(PINCP),
-    POV = dplyr::case_when(
-      POVPIP <= 100 ~ 1,
-      POVPIP > 100 ~ 0
-    ),
-    BACH = factor(dplyr::case_when(
-      SCHL >= 21 ~ 1,
-      SCHL < 21 ~ 0
-    ))
-  )
-
 valid_pumas <- rownames(basis_mat)
 
-pums <- pums1 |>
-  dplyr::select(PUMA, PWGTP, SEX, RACE, POV, LOGINCO, INCOME, BACH) |>
+pums <- pums_raw |>
+  dplyr::select(PUMA, PWGTP, SEX, RAC1P, POVPIP, PINCP, SCHL) |>
   tidyr::drop_na() |>
   dplyr::mutate(
-    POV = as.numeric(POV),
-    EDU = as.numeric(BACH) - 1
+    PINCP = as.numeric(PINCP),
+    PWGTP = as.numeric(PWGTP),
+    POVPIP = as.numeric(POVPIP)
+  ) |>
+  dplyr::filter(PINCP > 0) |>
+  dplyr::mutate(
+    SEX = factor(SEX),
+    BACH = factor(ifelse(SCHL >= 21, 1, 0)),
+    LOGINCO = log(PINCP),
+    POV = ifelse(POVPIP < 100, 1, 0)
   ) |>
   dplyr::filter(PUMA %in% valid_pumas) |>
+  dplyr::select(PUMA, PWGTP, SEX, BACH, LOGINCO, POV) |>
   dplyr::arrange(PUMA, SEX, BACH)
 
-pums$INCO <- pums$LOGINCO
-pums$INCO <- (pums$INCO - min(pums$INCO)) /
-  (max(pums$INCO) - min(pums$INCO))
+pums$INCO <- (pums$LOGINCO - min(pums$LOGINCO)) /
+  (max(pums$LOGINCO) - min(pums$LOGINCO))
 
-## Construct truth and poststratification cells
 truth <- pums |>
   dplyr::group_by(PUMA) |>
   dplyr::summarise(
     INCO = mean(INCO),
     POV = mean(POV),
+    N_pop = dplyr::n(),
     .groups = "drop"
   ) |>
   dplyr::arrange(PUMA)
 
+truth_gaus <- stats::setNames(truth$INCO, truth$PUMA)
+truth_bios <- stats::setNames(truth$POV, truth$PUMA)
+
 pcells <- pums |>
   dplyr::group_by(PUMA, SEX, BACH) |>
-  dplyr::summarise(popsize = dplyr::n(), .groups = "drop")
+  dplyr::summarise(popsize = dplyr::n(), .groups = "drop") |>
+  dplyr::arrange(PUMA, SEX, BACH)
 
 predX <- model.matrix(~ SEX + BACH - 1, data = pcells)
 predPsi <- basis_mat[match(as.character(pcells$PUMA), rownames(basis_mat)), , drop = FALSE]
 
-## Simulation settings
-n_sim <- 100
+stopifnot(!anyNA(match(as.character(pcells$PUMA), rownames(basis_mat))))
+
+n_sim <- 10
 nsim <- 1000
 nburn <- 1000
 nthin <- 1
+sample_size <- 1000
+
 n_area <- nrow(truth)
-
-## Allocate storage
-ubios_pre <- array(NA_real_, dim = c(n_area, n_sim))
-mbios_pre <- array(NA_real_, dim = c(n_area, n_sim))
-ugaus_pre <- array(NA_real_, dim = c(n_area, n_sim))
-mgaus_pre <- array(NA_real_, dim = c(n_area, n_sim))
-dgaus_pre <- array(NA_real_, dim = c(n_area, n_sim))
-dbio_pre <- array(NA_real_, dim = c(n_area, n_sim))
-
-ubios_qual <- array(NA_real_, dim = c(n_area, 2, n_sim))
-mbios_qual <- array(NA_real_, dim = c(n_area, 2, n_sim))
-ugaus_qual <- array(NA_real_, dim = c(n_area, 2, n_sim))
-mgaus_qual <- array(NA_real_, dim = c(n_area, 2, n_sim))
 
 cor_set <- numeric(n_sim)
 
-## Run simulation
+cr_ub <- numeric(n_sim)
+cr_mb <- numeric(n_sim)
+cr_ug <- numeric(n_sim)
+cr_mg <- numeric(n_sim)
+
+is_ub <- numeric(n_sim)
+is_mb <- numeric(n_sim)
+is_ug <- numeric(n_sim)
+is_mg <- numeric(n_sim)
+
+mse_ub <- numeric(n_sim)
+mse_mb <- numeric(n_sim)
+mse_ug <- numeric(n_sim)
+mse_mg <- numeric(n_sim)
+mse_db <- numeric(n_sim)
+mse_dg <- numeric(n_sim)
+
+n_sampled_domains <- integer(n_sim)
+
 for (k in seq_len(n_sim)) {
   set.seed(k)
-  ss <- 1000
 
   prob <- sampling::inclusionprobabilities(
     pums$PWGTP * (1 + 5 * (pums$POV == 1)),
-    ss
+    sample_size
   )
 
   Ind <- sampling::UPsystematic(prob)
-  samp <- pums[as.logical(Ind), ]
-  samp$P <- prob[as.logical(Ind)]
-  samp$W <- 1 / samp$P
+
+  samp <- pums[as.logical(Ind), , drop = FALSE]
+  samp$pi <- prob[as.logical(Ind)]
+  samp$W <- 1 / samp$pi
   samp$scaledWGT <- samp$W * nrow(samp) / sum(samp$W)
-
-  all_puma <- data.frame(PUMA = sort(unique(pums$PUMA)))
-
-  compare_df <- samp |>
-    dplyr::group_by(PUMA) |>
-    dplyr::summarise(
-      unweighted_means = mean(INCO),
-      unweighted_means_POV = mean(POV),
-      unweighted_means_EDU = mean(EDU),
-      weighted_means = stats::weighted.mean(INCO, W),
-      weighted_means_POV = stats::weighted.mean(POV, W),
-      weighted_means_EDU = stats::weighted.mean(EDU, W),
-      .groups = "drop"
-    ) |>
-    dplyr::right_join(all_puma, by = "PUMA") |>
-    dplyr::arrange(PUMA)
 
   cor_set[k] <- stats::cor(samp$POV, samp$INCO)
 
-  modwgt <- samp$scaledWGT
   modX <- model.matrix(~ SEX + BACH - 1, data = samp)
   modPsi <- basis_mat[match(as.character(samp$PUMA), rownames(basis_mat)), , drop = FALSE]
+
+  stopifnot(!anyNA(match(as.character(samp$PUMA), rownames(basis_mat))))
+
   modY <- samp$INCO
   modZ <- samp$POV
+  modwgt <- samp$scaledWGT
 
   unis_wage <- unis_gaus(
     X = modX,
@@ -189,29 +170,36 @@ for (k in seq_len(n_sim)) {
     b = 0.1
   )
 
-  mult_fit <- MTSM_br(
+  mult_fit <- MTSM_basis(
     X_1 = modX,
     X_2 = modX,
     Z_1 = modY,
     Z_2 = modZ,
     S = modPsi,
-    area_idx = samp$PUMA,
+    area_idx = NULL,
+    sig2b = 1000,
     wgt = modwgt,
-    n = NULL,
+    n_binom = NULL,
     predX = predX,
     predS = predPsi,
+    n_preds = NULL,
     nburn = nburn,
     nsim = nsim,
     nthin = nthin,
-    tau_1 = 1,
-    tau_2_init = 1
+    sig2t = 10,
+    tau_1_init = 1,
+    a_eps = 0.1,
+    b_eps = 0.1,
+    aeta = 0.1,
+    beta = 0.1,
+    alambda = 2,
+    blambda = 1
   )
-
 
   results_ug <- gaus_post(
     preds = unis_wage$Preds,
     sig2chain = unis_wage$sig2.chain,
-    true_mean = truth$INCO,
+    true_mean = truth_gaus,
     region = pcells$PUMA,
     popsize = pcells$popsize
   )
@@ -219,119 +207,84 @@ for (k in seq_len(n_sim)) {
   results_mg <- gaus_post(
     preds = mult_fit$preds_gaus.chain,
     sig2chain = mult_fit$sig2.chain,
-    true_mean = truth$INCO,
+    true_mean = truth_gaus,
     region = pcells$PUMA,
     popsize = pcells$popsize
   )
 
   results_ub <- bios_post(
     preds = unis_pov$Preds,
-    true_mean = truth$POV,
+    true_mean = truth_bios,
     region = pcells$PUMA,
     popsize = pcells$popsize
   )
 
   results_mb <- bios_post(
     preds = mult_fit$preds_bios.chain,
-    true_mean = truth$POV,
+    true_mean = truth_bios,
     region = pcells$PUMA,
     popsize = pcells$popsize
   )
 
-  ubios_pre[, k] <- results_ub$est
-  mbios_pre[, k] <- results_mb$est
-  dbio_pre[, k] <- compare_df$weighted_means_POV
-  ugaus_pre[, k] <- results_ug$est
-  mgaus_pre[, k] <- results_mg$est
-  dgaus_pre[, k] <- compare_df$weighted_means
+  direct_df <- samp |>
+    dplyr::group_by(PUMA) |>
+    dplyr::summarise(
+      n_samp = dplyr::n(),
+      ht_total_gaus = sum(W * INCO),
+      ht_total_bios = sum(W * POV),
+      .groups = "drop"
+    ) |>
+    dplyr::right_join(
+      truth |> dplyr::select(PUMA, N_pop),
+      by = "PUMA"
+    ) |>
+    dplyr::arrange(PUMA) |>
+    dplyr::mutate(
+      dgaus = ht_total_gaus / N_pop,
+      dbios = ht_total_bios / N_pop
+    )
 
-  ubios_qual[, 1, k] <- results_ub$lb
-  ubios_qual[, 2, k] <- results_ub$ub
-  mbios_qual[, 1, k] <- results_mb$lb
-  mbios_qual[, 2, k] <- results_mb$ub
-  ugaus_qual[, 1, k] <- results_ug$lb
-  ugaus_qual[, 2, k] <- results_ug$ub
-  mgaus_qual[, 1, k] <- results_mg$lb
-  mgaus_qual[, 2, k] <- results_mg$ub
+  keep_area <- !is.na(direct_df$n_samp)
+  n_sampled_domains[k] <- sum(keep_area)
+
+  est_ug <- results_ug$est[truth$PUMA]
+  est_mg <- results_mg$est[truth$PUMA]
+  est_ub <- results_ub$est[truth$PUMA]
+  est_mb <- results_mb$est[truth$PUMA]
+
+  lb_ug <- results_ug$lb[truth$PUMA]
+  ub_ug <- results_ug$ub[truth$PUMA]
+  lb_mg <- results_mg$lb[truth$PUMA]
+  ub_mg <- results_mg$ub[truth$PUMA]
+
+  lb_ub <- results_ub$lb[truth$PUMA]
+  ub_ub <- results_ub$ub[truth$PUMA]
+  lb_mb <- results_mb$lb[truth$PUMA]
+  ub_mb <- results_mb$ub[truth$PUMA]
+
+  cr_ug[k] <- mean(lb_ug <= truth$INCO & truth$INCO <= ub_ug)
+  cr_mg[k] <- mean(lb_mg <= truth$INCO & truth$INCO <= ub_mg)
+  cr_ub[k] <- mean(lb_ub <= truth$POV & truth$POV <= ub_ub)
+  cr_mb[k] <- mean(lb_mb <= truth$POV & truth$POV <= ub_mb)
+
+  is_ug[k] <- mean(interval_score(lb_ug, ub_ug, truth$INCO))
+  is_mg[k] <- mean(interval_score(lb_mg, ub_mg, truth$INCO))
+  is_ub[k] <- mean(interval_score(lb_ub, ub_ub, truth$POV))
+  is_mb[k] <- mean(interval_score(lb_mb, ub_mb, truth$POV))
+
+  mse_ug[k] <- mean((est_ug[keep_area] - truth$INCO[keep_area])^2)
+  mse_mg[k] <- mean((est_mg[keep_area] - truth$INCO[keep_area])^2)
+  mse_ub[k] <- mean((est_ub[keep_area] - truth$POV[keep_area])^2)
+  mse_mb[k] <- mean((est_mb[keep_area] - truth$POV[keep_area])^2)
+
+  mse_dg[k] <- mean((direct_df$dgaus[keep_area] - truth$INCO[keep_area])^2)
+  mse_db[k] <- mean((direct_df$dbios[keep_area] - truth$POV[keep_area])^2)
 
   cat("Finished", k, "simulation dataset\n")
 }
 
-## Compute performance metrics
-cr_ub <- numeric(n_sim)
-cr_mb <- numeric(n_sim)
-cr_ug <- numeric(n_sim)
-cr_mg <- numeric(n_sim)
-
-is_ub <- numeric(n_sim)
-is_mb <- numeric(n_sim)
-is_ug <- numeric(n_sim)
-is_mg <- numeric(n_sim)
-
-mse_ub <- numeric(n_sim)
-mse_mb <- numeric(n_sim)
-mse_ug <- numeric(n_sim)
-mse_mg <- numeric(n_sim)
-mse_dg <- numeric(n_sim)
-mse_db <- numeric(n_sim)
-
-for (i in seq_len(n_sim)) {
-  cr_ub[i] <- mean(
-    ubios_qual[, 1, i] < truth$POV &
-      truth$POV < ubios_qual[, 2, i]
-  )
-  cr_mb[i] <- mean(
-    mbios_qual[, 1, i] < truth$POV &
-      truth$POV < mbios_qual[, 2, i]
-  )
-  cr_ug[i] <- mean(
-    ugaus_qual[, 1, i] < truth$INCO &
-      truth$INCO < ugaus_qual[, 2, i]
-  )
-  cr_mg[i] <- mean(
-    mgaus_qual[, 1, i] < truth$INCO &
-      truth$INCO < mgaus_qual[, 2, i]
-  )
-
-  is_ub[i] <- mean(
-    interval_score(
-      ubios_qual[, 1, i],
-      ubios_qual[, 2, i],
-      truth$POV
-    )
-  )
-  is_mb[i] <- mean(
-    interval_score(
-      mbios_qual[, 1, i],
-      mbios_qual[, 2, i],
-      truth$POV
-    )
-  )
-  is_ug[i] <- mean(
-    interval_score(
-      ugaus_qual[, 1, i],
-      ugaus_qual[, 2, i],
-      truth$INCO
-    )
-  )
-  is_mg[i] <- mean(
-    interval_score(
-      mgaus_qual[, 1, i],
-      mgaus_qual[, 2, i],
-      truth$INCO
-    )
-  )
-
-  mse_ug[i] <- mean((ugaus_pre[, i] - truth$INCO)^2, na.rm = TRUE)
-  mse_ub[i] <- mean((ubios_pre[, i] - truth$POV)^2, na.rm = TRUE)
-  mse_dg[i] <- mean((dgaus_pre[, i] - truth$INCO)^2, na.rm = TRUE)
-  mse_db[i] <- mean((dbio_pre[, i] - truth$POV)^2, na.rm = TRUE)
-  mse_mg[i] <- mean((mgaus_pre[, i] - truth$INCO)^2, na.rm = TRUE)
-  mse_mb[i] <- mean((mbios_pre[, i] - truth$POV)^2, na.rm = TRUE)
-}
-
 save.image("empirical_simulation_basis_results.RData")
-## Store ratio summaries
+
 mse_ratio_mg <- mse_mg / mse_ug
 mse_ratio_mb <- mse_mb / mse_ub
 mse_ratio_ug <- mse_ug / mse_dg
@@ -340,7 +293,6 @@ mse_ratio_ub <- mse_ub / mse_db
 is_ratio_mg <- is_mg / is_ug
 is_ratio_mb <- is_mb / is_ub
 
-## Prepare plotting data
 df_mse <- dplyr::bind_rows(
   data.frame(Ratio = mse_ratio_mg, Comparison = "Multi / Univariate", Type = "Gaussian"),
   data.frame(Ratio = mse_ratio_mb, Comparison = "Multi / Univariate", Type = "Binomial"),
@@ -375,7 +327,6 @@ df_cr_plot$Method <- factor(
   levels = c("Multi-type", "Univariate")
 )
 
-## Plot MSE ratios
 p_mse <- ggplot(df_mse, aes(x = Comparison, y = Ratio, fill = Type)) +
   geom_hline(yintercept = 1, color = "#E63946", linetype = "dashed", linewidth = 1) +
   geom_boxplot(
@@ -402,7 +353,6 @@ p_mse <- ggplot(df_mse, aes(x = Comparison, y = Ratio, fill = Type)) +
     axis.text.x = element_text(face = "bold", size = 12)
   )
 
-## Plot interval score ratios
 p_is <- ggplot(df_is, aes(x = Comparison, y = Ratio, fill = Type)) +
   geom_hline(yintercept = 1, color = "#E63946", linetype = "dashed", linewidth = 1) +
   geom_boxplot(
@@ -429,7 +379,6 @@ p_is <- ggplot(df_is, aes(x = Comparison, y = Ratio, fill = Type)) +
     axis.text.x = element_text(face = "bold", size = 12)
   )
 
-## Plot empirical coverage rates
 p_cr <- ggplot(df_cr_plot, aes(x = Method, y = CR, fill = Type)) +
   geom_hline(yintercept = 0.95, color = "#E63946", linetype = "dashed", linewidth = 1) +
   geom_boxplot(
@@ -456,11 +405,50 @@ p_cr <- ggplot(df_cr_plot, aes(x = Method, y = CR, fill = Type)) +
     axis.text.x = element_text(face = "bold", size = 12)
   )
 
-## Combine and export plots
 final_plot <- p_mse / (p_is + p_cr) +
   patchwork::plot_layout(guides = "collect") &
   theme(legend.position = "right")
 
 print(final_plot)
 
-ggsave("Combined_Metrics_Plot_basis.png", final_plot, width = 12, height = 6, dpi = 300)
+ggsave(
+  "Combined_Metrics_Plot_basis.png",
+  final_plot,
+  width = 12,
+  height = 6,
+  dpi = 300
+)
+
+summary_table <- data.frame(
+  Metric = c(
+    "Avg sampled domains",
+    "Avg corr(POV, INCO)",
+    "Mean MSE ratio: Multi / Uni (Gaussian)",
+    "Mean MSE ratio: Multi / Uni (Binomial)",
+    "Mean MSE ratio: Uni / Direct (Gaussian)",
+    "Mean MSE ratio: Uni / Direct (Binomial)",
+    "Mean IS ratio: Multi / Uni (Gaussian)",
+    "Mean IS ratio: Multi / Uni (Binomial)",
+    "Mean CR: Multi (Gaussian)",
+    "Mean CR: Uni (Gaussian)",
+    "Mean CR: Multi (Binomial)",
+    "Mean CR: Uni (Binomial)"
+  ),
+  Value = c(
+    mean(n_sampled_domains),
+    mean(cor_set),
+    mean(mse_ratio_mg),
+    mean(mse_ratio_mb),
+    mean(mse_ratio_ug),
+    mean(mse_ratio_ub),
+    mean(is_ratio_mg),
+    mean(is_ratio_mb),
+    mean(cr_mg),
+    mean(cr_ug),
+    mean(cr_mb),
+    mean(cr_ub)
+  )
+)
+
+print(summary_table)
+write.csv(summary_table, "empirical_simulation_basis_summary.csv", row.names = FALSE)

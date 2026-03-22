@@ -194,7 +194,7 @@ mult_br <- MTSM_br(
   nthin = nthin,
   sig2t = 1,
   sig2e = 5,
-  tau_1_init = -1,
+  tau_2_init = -1,
   a_eps = 0.1,
   b_eps = 0.1,
   aeta = 0.1,

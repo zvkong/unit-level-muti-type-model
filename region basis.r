@@ -232,7 +232,7 @@ unis_pov <- unis_bios_grouped(
 #     tau_1 = 1,
 #     tau_2_init = 1
 #   )
-mult_br <- MTSM_basis_grouped(
+mult_br <- MTSM_basis(
   X_1 = modX1,
   Z_1 = modY,
   S_1 = modS1,
