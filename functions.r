@@ -886,3 +886,300 @@ MTSM_basis <- function(X_1, X_2, Z_1, Z_2, S, area_idx = NULL,
     tau_2.chain = tau_2.chain
   )
 }
+
+unis_bios_grouped <- function(X, y_sum, n_sum, S, area_idx = NULL,
+                              sig2b = 1000,
+                              predX, predS,
+                              nburn = 1000, nsim = 5000, nthin = 1,
+                              a = 0.1, b = 0.1) {
+  N <- nrow(X)
+  p <- ncol(X)
+  r <- ncol(S)
+  npred <- nrow(predX)
+
+  if (length(y_sum) != N || length(n_sum) != N) {
+    stop("y_sum and n_sum must have length nrow(X).")
+  }
+  if (nrow(S) != N) stop("S must have N rows.")
+  if (nrow(predS) != npred) stop("predS must have the same number of rows as predX.")
+  if (ncol(predS) != r) stop("predS must have the same number of columns as S.")
+
+  kappa <- y_sum - n_sum / 2
+  tX_k <- crossprod(X, kappa)
+  tS_k <- crossprod(S, kappa)
+
+  Ip <- diag(p)
+  Ir <- diag(r)
+
+  use_opt <- !is.null(area_idx)
+  if (use_opt) {
+    area_idx <- as.character(area_idx)
+    area_fac <- factor(area_idx, levels = unique(area_idx))
+    first_idx <- match(levels(area_fac), area_idx)
+    S_unique <- S[first_idx, , drop = FALSE]
+  }
+
+  Mu <- rep(0, N)
+  Beta <- rep(0, p)
+  U <- rep(0, r)
+  Sigma2_u <- 1
+
+  n_keep <- floor(nsim / nthin)
+  Beta.chain <- array(0, dim = c(p, n_keep))
+  U.chain <- array(0, dim = c(r, n_keep))
+  Sigma2_u.chain <- numeric(n_keep)
+  Mu.chain <- array(0, dim = c(N, n_keep))
+  Preds <- array(0, dim = c(npred, n_keep))
+  logit_bios.chain <- array(0, dim = c(npred, n_keep))
+
+  pb <- txtProgressBar(min = 0, max = nsim + nburn, style = 3)
+
+  for (index in seq_len(nsim + nburn)) {
+    omega <- BayesLogit::rpg.gamma(N, n_sum, Mu)
+    X_w_X <- crossprod(X, omega * X)
+
+    if (use_opt) {
+      omega_area <- as.vector(rowsum(omega, area_fac, reorder = FALSE))
+      S_w_S <- crossprod(S_unique, omega_area * S_unique)
+
+      omega_X_area <- rowsum(omega * X, area_fac, reorder = FALSE)
+      S_w_X <- crossprod(S_unique, omega_X_area)
+    } else {
+      S_w_S <- crossprod(S, omega * S)
+      S_w_X <- crossprod(S, omega * X)
+    }
+
+    Q_Beta <- X_w_X + Ip / sig2b
+    b_Beta <- tX_k - t(S_w_X) %*% U
+    Beta <- rmvn_prec(b_Beta, Q_Beta)
+
+    Sigma2_u <- 1 / stats::rgamma(
+      1,
+      shape = a + r / 2,
+      rate = b + 0.5 * sum(U^2)
+    )
+
+    Q_U <- S_w_S + Ir / Sigma2_u
+    b_U <- tS_k - S_w_X %*% Beta
+    U <- rmvn_prec(b_U, Q_U)
+
+    Mu <- as.vector(X %*% Beta + S %*% U)
+    logit_bios <- as.vector(predX %*% Beta + predS %*% U)
+    preds <- stats::plogis(logit_bios)
+
+    if (index %% 20 == 0 || index == nsim + nburn) {
+      utils::setTxtProgressBar(pb, index)
+    }
+
+    if (index > nburn && (index - nburn) %% nthin == 0) {
+      pos <- (index - nburn) / nthin
+      Beta.chain[, pos] <- Beta
+      U.chain[, pos] <- U
+      Sigma2_u.chain[pos] <- Sigma2_u
+      Mu.chain[, pos] <- Mu
+      Preds[, pos] <- preds
+      logit_bios.chain[, pos] <- logit_bios
+    }
+  }
+
+  close(pb)
+
+  list(
+    Beta.chain = Beta.chain,
+    U.chain = U.chain,
+    Sigma2_u.chain = Sigma2_u.chain,
+    Mu.chain = Mu.chain,
+    Preds = Preds,
+    logit_bios.chain = logit_bios.chain
+  )
+}
+
+MTSM_br_grouped <- function(X_1, Z_1, S_1, wgt_1,
+                            X_2, y_sum, n_sum, S_2, area_idx_2 = NULL,
+                            sig2b = 1000,
+                            predX, predS, n_preds = NULL,
+                            nburn = 1000, nsim = 5000, nthin = 1,
+                            sig2t = 10, tau_1 = 1, tau_2_init = 1,
+                            a_eps = 0.1, b_eps = 0.1,
+                            aeta = 0.1, beta = 0.1,
+                            alambda = 0.1, blambda = 0.1) {
+
+  N1 <- nrow(X_1)
+  N2 <- nrow(X_2)
+
+  if (length(Z_1) != N1 || length(wgt_1) != N1) {
+    stop("Z_1 and wgt_1 must have length nrow(X_1).")
+  }
+  if (length(y_sum) != N2 || length(n_sum) != N2) {
+    stop("y_sum and n_sum must have length nrow(X_2).")
+  }
+  if (nrow(S_1) != N1) stop("S_1 must have N1 rows.")
+  if (nrow(S_2) != N2) stop("S_2 must have N2 rows.")
+  if (ncol(S_1) != ncol(S_2)) stop("S_1 and S_2 must have the same number of columns.")
+
+  npred <- nrow(predX)
+  if (nrow(predS) != npred) stop("predS must have the same number of rows as predX.")
+  if (ncol(predS) != ncol(S_1)) stop("predS must have the same number of columns as S_1.")
+
+  p_1 <- ncol(X_1)
+  p_2 <- ncol(X_2)
+  r <- ncol(S_1)
+
+  Ip1 <- diag(p_1)
+  Ip2 <- diag(p_2)
+  Ir <- diag(r)
+
+  w_sum <- sum(wgt_1)
+
+  X1_w_X1 <- crossprod(X_1, wgt_1 * X_1)
+  S1_w_S1 <- crossprod(S_1, wgt_1 * S_1)
+  X1_w_S1 <- crossprod(X_1, wgt_1 * S_1)
+  S1_w_X1 <- t(X1_w_S1)
+  tX1_wZ1 <- crossprod(X_1, wgt_1 * Z_1)
+  tS1_wZ1 <- crossprod(S_1, wgt_1 * Z_1)
+
+  kappa <- y_sum - n_sum / 2
+  tX2_k <- crossprod(X_2, kappa)
+  tS2_k <- crossprod(S_2, kappa)
+
+  use_opt <- !is.null(area_idx_2)
+  if (use_opt) {
+    area_idx_2 <- as.character(area_idx_2)
+    area_fac_2 <- factor(area_idx_2, levels = unique(area_idx_2))
+    first_idx_2 <- match(levels(area_fac_2), area_idx_2)
+    S2_unique <- S_2[first_idx_2, , drop = FALSE]
+  }
+
+  n_keep <- floor(nsim / nthin)
+
+  tau_2 <- tau_2_init
+  Beta_1 <- rep(0, p_1)
+  Beta_2 <- rep(0, p_2)
+  eta <- rep(0, r)
+  lambda <- rep(0, r)
+  Mu_1 <- rep(0, N1)
+  Mu_2 <- rep(0, N2)
+  sig2 <- 1
+  sig2e <- 1
+  sig2l <- 1
+
+  tau_1.chain <- rep(tau_1, n_keep)
+  tau_2.chain <- numeric(n_keep)
+  Sigma2_lambda.chain <- numeric(n_keep)
+  Sigma2_eta.chain <- numeric(n_keep)
+  sig2.chain <- numeric(n_keep)
+
+  Beta_1.chain <- array(0, dim = c(p_1, n_keep))
+  Beta_2.chain <- array(0, dim = c(p_2, n_keep))
+  eta.chain <- array(0, dim = c(r, n_keep))
+  lambda.chain <- array(0, dim = c(r, n_keep))
+  Mu_1.chain <- array(0, dim = c(N1, n_keep))
+  Mu_2.chain <- array(0, dim = c(N2, n_keep))
+  preds_gaus.chain <- array(0, dim = c(npred, n_keep))
+  preds_bios.chain <- array(0, dim = c(npred, n_keep))
+  logit_bios.chain <- array(0, dim = c(npred, n_keep))
+
+  pb <- txtProgressBar(min = 0, max = nsim + nburn, style = 3)
+
+  for (index in seq_len(nsim + nburn)) {
+    sig2 <- 1 / stats::rgamma(
+      1,
+      shape = a_eps + w_sum / 2,
+      rate = b_eps + 0.5 * sum(wgt_1 * (Z_1 - Mu_1)^2)
+    )
+
+    omega <- BayesLogit::rpg.gamma(N2, n_sum, Mu_2)
+    X2_w_X2 <- crossprod(X_2, omega * X_2)
+
+    if (use_opt) {
+      omega_area <- as.vector(rowsum(omega, area_fac_2, reorder = FALSE))
+      OM <- crossprod(S2_unique, omega_area * S2_unique)
+
+      omega_X2_area <- rowsum(omega * X_2, area_fac_2, reorder = FALSE)
+      S2_w_X2 <- crossprod(S2_unique, omega_X2_area)
+    } else {
+      OM <- crossprod(S_2, omega * S_2)
+      S2_w_X2 <- crossprod(S_2, omega * X_2)
+    }
+
+    sig2e <- 1 / stats::rgamma(
+      1,
+      shape = aeta + r / 2,
+      rate = beta + 0.5 * sum(eta^2)
+    )
+
+    Q_eta <- (tau_1^2) * (S1_w_S1 / sig2) + (tau_2^2) * OM + Ir / sig2e
+    b_eta <- tau_1 * (tS1_wZ1 - S1_w_X1 %*% Beta_1) / sig2 +
+      tau_2 * (tS2_k - S2_w_X2 %*% Beta_2 - OM %*% lambda)
+    eta <- rmvn_prec(b_eta, Q_eta)
+
+    Q_Beta_1 <- X1_w_X1 / sig2 + Ip1 / sig2b
+    b_Beta_1 <- (tX1_wZ1 - tau_1 * X1_w_S1 %*% eta) / sig2
+    Beta_1 <- rmvn_prec(b_Beta_1, Q_Beta_1)
+
+    sig2l <- 1 / stats::rgamma(
+      1,
+      shape = alambda + r / 2,
+      rate = blambda + 0.5 * sum(lambda^2)
+    )
+
+    Q_lambda <- OM + Ir / sig2l
+    b_lambda <- tS2_k - S2_w_X2 %*% Beta_2 - tau_2 * OM %*% eta
+    lambda <- rmvn_prec(b_lambda, Q_lambda)
+
+    Q_Beta_2 <- X2_w_X2 + Ip2 / sig2b
+    b_Beta_2 <- tX2_k - t(S2_w_X2) %*% (tau_2 * eta + lambda)
+    Beta_2 <- rmvn_prec(b_Beta_2, Q_Beta_2)
+
+    var_tau_2 <- 1 / (sum(eta * (OM %*% eta)) + 1 / sig2t)
+    mean_tau_2 <- var_tau_2 * sum(eta * (tS2_k - S2_w_X2 %*% Beta_2 - OM %*% lambda))
+    tau_2 <- stats::rnorm(1, mean_tau_2, sqrt(var_tau_2))
+
+    Mu_1 <- as.vector(X_1 %*% Beta_1 + tau_1 * S_1 %*% eta)
+    Mu_2 <- as.vector(X_2 %*% Beta_2 + tau_2 * S_2 %*% eta + S_2 %*% lambda)
+
+    preds_gaus <- as.vector(predX %*% Beta_1 + tau_1 * predS %*% eta)
+    logit_bios <- as.vector(predX %*% Beta_2 + tau_2 * predS %*% eta + predS %*% lambda)
+    preds_bios <- stats::plogis(logit_bios)
+
+    if (index %% 20 == 0 || index == nsim + nburn) {
+      utils::setTxtProgressBar(pb, index)
+    }
+
+    if (index > nburn && (index - nburn) %% nthin == 0) {
+      pos <- (index - nburn) / nthin
+      tau_2.chain[pos] <- tau_2
+      sig2.chain[pos] <- sig2
+      Sigma2_eta.chain[pos] <- sig2e
+      Sigma2_lambda.chain[pos] <- sig2l
+      Beta_1.chain[, pos] <- Beta_1
+      Beta_2.chain[, pos] <- Beta_2
+      eta.chain[, pos] <- eta
+      lambda.chain[, pos] <- lambda
+      Mu_1.chain[, pos] <- Mu_1
+      Mu_2.chain[, pos] <- Mu_2
+      preds_gaus.chain[, pos] <- preds_gaus
+      preds_bios.chain[, pos] <- preds_bios
+      logit_bios.chain[, pos] <- logit_bios
+    }
+  }
+
+  close(pb)
+
+  list(
+    Beta_1.chain = Beta_1.chain,
+    Beta_2.chain = Beta_2.chain,
+    eta.chain = eta.chain,
+    lambda.chain = lambda.chain,
+    Sigma2_eta.chain = Sigma2_eta.chain,
+    Sigma2_lambda.chain = Sigma2_lambda.chain,
+    sig2.chain = sig2.chain,
+    Mu_1.chain = Mu_1.chain,
+    Mu_2.chain = Mu_2.chain,
+    preds_gaus.chain = preds_gaus.chain,
+    preds_bios.chain = preds_bios.chain,
+    logit_bios.chain = logit_bios.chain,
+    tau_1.chain = tau_1.chain,
+    tau_2.chain = tau_2.chain
+  )
+}
