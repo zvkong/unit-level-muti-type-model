@@ -541,7 +541,7 @@ abline(h = 1, col = 'red')
 
 par(mfrow = c(1, 2))
 
-load("region_results.RData")
+# load("region_results.RData")
 
 p_gaussian <- (plot_gaus | p_sig_gaus) + patchwork::plot_layout(widths = c(3, 1))
 p_binomial <- (plot_bios | p_sig_bios) + patchwork::plot_layout(widths = c(3, 1))
