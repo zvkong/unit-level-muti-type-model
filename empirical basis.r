@@ -1,5 +1,5 @@
-source("basis version/packages.r")
-source("basis version/functions.R")
+source("./packages.r")
+source("./functions.R")
 
 data_file <- "source data/IL23.csv"
 
@@ -239,5 +239,5 @@ save(
   ubios_pre, mbios_pre, ugaus_pre, mgaus_pre, dbio_pre, dgaus_pre,
   ubios_qual, mbios_qual, ugaus_qual, mgaus_qual,
   cor_set,
-  file = file.path("data", "empirical_basis_tau_in_gauss_results 2.RData")
+  file = file.path("data", "empirical_basis_tau_in_gauss_results.RData")
 )

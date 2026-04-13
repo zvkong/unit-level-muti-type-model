@@ -1,5 +1,5 @@
-source("basis version/packages.r")
-source("basis version/functions.r")
+source("./packages.r")
+source("./functions.R")
 
 load("data/region_basis_tau_in_gauss_results.RData")
 if (!exists("fit_ug") && exists("unis_wage")) {
