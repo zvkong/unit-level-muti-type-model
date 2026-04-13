@@ -1,5 +1,6 @@
-source("./packages.r")
-source("./functions.R")
+source("packages.r")
+source("functions.r")
+
 interval_score <- function(lower, upper, truth, alpha = 0.05) {
   width <- upper - lower
   penalty_low  <- (2 / alpha) * pmax(lower - truth, 0)

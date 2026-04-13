@@ -1,5 +1,6 @@
-source("./packages.r")
-source("./functions.R")
+source("packages.r")
+source("functions.r")
+
 data_file <- "source data/IL23.csv"
 
 dir.create("data", showWarnings = FALSE)
